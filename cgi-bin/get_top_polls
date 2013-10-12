@@ -1,0 +1,46 @@
+#!@PERL@
+
+use strict;
+use warnings;
+use CGI qw(:standard);
+use POSIX qw(strftime);
+
+use lib '@CGIBINDIR@';
+
+my $home = '@CIVSDATADIR@';
+
+my $top_polls = $home . "/elections/top_polls.html";
+
+undef $/;
+
+print CGI::header(-charset => 'utf-8');
+# print CGI::start_html(-title => $title,
+		      #-encoding => 'utf-8');
+
+open (IN, $top_polls);
+
+print <IN>;
+
+
+if (@LOG_HOME_VISITS@) {
+    my $remote_ip_address;
+    if ('@USING_ISA@') {
+        $remote_ip_address = http('HTTP_IPREMOTEADDR');
+        if (!defined($remote_ip_address)) {
+            $remote_ip_address = http('HTTP_REMOTE_ADDRESS');
+        }
+        if (!defined($remote_ip_address)) {
+            $remote_ip_address = remote_addr();
+        }
+    } else {
+        $remote_ip_address = remote_addr();
+    }  
+    
+    my $civs_log = $home . '/log';
+    my $now = strftime "%a %b %e %H:%M:%S %Y", localtime;
+    open (LOG, ">>$civs_log");
+    print LOG "$now $remote_ip_address home-page-visit\r\n";
+    close(LOG);
+}
+
+exit 0;

@@ -1,0 +1,290 @@
+#!@PERL@
+
+use strict;
+use warnings;
+
+use lib '@CGIBINDIR@';
+use civs_common;
+use CGI qw(:standard);
+use Digest::MD5 qw(md5_hex);
+use DB_File;
+use Socket;
+use IO::Handle;
+use mail;
+
+my $thisurl = $civs_bin_path."/control@PERLEXT@";
+
+HTML_Header($tx->CIVS_Poll_Control);
+use election 1.02;
+use voting;
+
+my $control_key = param('key');    
+my $authorization_key = param('akey');
+
+CIVS_Header($tx->Poll_control);
+
+CheckElectionID;
+CheckControlKey($control_key);
+CheckAuthorizationKeyForAddingVoter($authorization_key);
+
+print h1("$title");
+  
+print $tx->poll_supervisor($name,$email_addr), br(), $cr;
+if (!IsStarted) {
+    print "<form method=\"POST\"
+		action=\"$civs_bin_path/start_election@PERLEXT@\"
+		enctype=\"multipart/form-data\"
+		name=\"Start\">", $cr;
+    print '<p>'. $tx->poll_has_not_yet_started;
+    print hidden('id', $election_id);
+    print hidden('key', $control_key);
+    print hidden('akey', $authorization_key)
+		if defined($authorization_key);
+    print '<input type="submit" value="'.$tx->Start_poll.'" name="start">';
+    print '</p></form>';
+} elsif (!IsStopped) {
+    print "<form method=\"POST\"
+		action=\"$civs_bin_path/close@PERLEXT@\"
+		enctype=\"multipart/form-data\"
+		name=\"Close\">", $cr;
+    print '<p>'.$tx->the_poll_is_in_progress;
+    print hidden('id', $election_id);
+    print hidden('key', $control_key);
+    print '<input type="submit" value="'.$tx->End_poll.'" name="close"
+            onclick="return confirm(\'', $tx->ending_poll_cannot_be_undone, '\')">', $cr;
+    print '</p></form>', $cr;
+
+    if ($writeins eq 'yes') {
+		if (param('allow_voting')) {
+		    $edata{'allow_voting'} = $allow_voting = 'yes';
+		    $voting_enabled = 1;
+		}
+		if (param('nowriteins')) {
+		    $edata{'writeins'} = $writeins = 'no';
+		    print p($tx->writeins_have_been_disabled);
+		} else {
+		    print "<form method=\"POST\"
+				action=\"$civs_bin_path/control@PERLEXT@\"
+				enctype=\"multipart/form-data\"
+				name=\"Nowriteins\">", $cr;
+		    print p($tx->Writeins_currently_allowed,
+			    hidden('id', $election_id),
+			    hidden('key', $control_key),
+			    '<input type="submit" value="',
+			        $tx->disallow_further_writeins,
+				'" name="nowriteins">');
+		    if ($allow_voting ne 'yes') {
+			print p($tx->voting_disabled_during_writeins,
+			    hidden('id', $election_id),
+			    hidden('key', $control_key),
+			'<input type="submit" value="',
+			  $tx->allow_voting_during_writeins,
+			  '" name="allow_voting">');
+		    }
+		    print hidden('akey', $authorization_key)
+			    if defined($authorization_key);
+		    print "</form>", $cr;
+		}
+    }
+    if ($external_ballots eq 'yes') {
+	print p($tx->this_is_a_test_poll), $cr;
+    } elsif ($public eq 'yes') {
+	    my $url = "http://$thishost$civs_bin_path/vote@PERLEXT@?id=$election_id";
+	    $url .= "&akey=$authorization_key" 
+		    if defined($authorization_key) && $authorization_key ne '';
+	    print p($tx->This_is_a_public_poll_plus_link($url, $publicize eq 'yes')), $cr;
+	    
+	    print p($tx->Or_paste_this_code);
+	    print '<textarea class="paste" rows=8 cols=90>';
+	    my @choice_index, my @rank;
+	    my $js_ui = 1;
+	    if (defined($proportional) && defined($use_combined_ratings) &&
+		$proportional eq 'yes' && $use_combined_ratings) { $js_ui = 0; }
+	    for (my $i = 0; $i < $num_choices; $i++) {
+		    $choice_index[$i] = $i;
+		    if ($proportional eq 'yes' && $use_combined_ratings) {
+			    $rank[$i] = 0;
+		    } else {
+			    $rank[$i] = $num_choices;
+		    }
+	    }
+	    if (!defined($shuffle) || $shuffle ne 'no') {
+		fisher_yates_shuffle(\@choice_index);
+	    }
+	    &voting::GenerateVoteForm('', $authorization_key, [@choice_index], [@rank], $js_ui, 1,
+		($ballot_reporting eq 'yes' && 
+		$reveal_voters eq 'yes' &&
+		$public));
+	    print '<script src="http://ajax.googleapis.com/ajax/libs/jquery/1.4.1/jquery.min.js"></script>', $cr;
+	    print '<script src="http://ajax.googleapis.com/ajax/libs/jqueryui/1.7.2/jquery-ui.min.js"></script>', $cr;
+	    print '<script src="@CIVSURL@/vote.js"></script>', $cr;
+	    print '<script>setup()</script>', $cr;
+	    print '</textarea><br>';
+    }
+
+} else {    
+    &CloseDatabase;
+    my $results_link;
+    if ($restrict_results eq 'yes') {
+	$results_link = "";
+    } else {
+	$results_link =
+	    $tx->Poll_results_are_available("$civs_bin_path/results@PERLEXT@?id=$election_id");
+    }
+    print p($tx->The_poll_has_ended, $results_link);
+}
+
+my $num_auth_string;
+if (IsStarted or $num_auth) {
+    $num_auth_string = "$num_auth"
+} else {
+    my $waiting = $#addresses + 1;
+    $num_auth_string = $tx->no_authorized_yet($waiting);
+}
+print $tx->total_authorized_voters($num_auth_string), br(), $cr
+    unless $public eq 'yes';
+
+$num_votes += 0;
+if ($restrict_results eq 'yes') {
+    if (IsStopped) {
+	print $tx->Poll_results_are_now_available_to_the_following_users, br, $cr;
+    } else {
+	print $tx->Poll_results_will_be_available_to_the_following_users, br, $cr;
+    }
+    my @result_addrs = split /(\r\n)+/, $result_addrs;
+    print '<ul>';
+    foreach my $addr (@result_addrs) {
+	$addr = TrimAddr($addr);
+	if (CheckAddr($addr)) {
+	    print '<li>', $addr, $cr;
+	}
+    }
+    print '</ul>';
+} else {
+    if (!IsStopped) {
+	print p($tx->Poll_results_available_to_all_voters_when_poll_completes);
+    }
+}
+print $tx->actual_votes_so_far($num_votes), br(), $cr;
+print $tx->poll_ends($election_end), br(), $cr;
+
+if ($writeins eq 'yes') {
+    print $tx->Writeins_allowed, br(), $cr;
+    if (!$voting_enabled) {
+	print $tx->Voting_is_disabled_during_writeins, br(), $cr;
+    }
+} else {
+    print $tx->Writeins_not_allowed, br(), $cr;
+}
+
+if ($no_opinion eq 'yes') {
+    print $tx->Voters_can_choose_No_opinion, br(), $cr;
+}
+
+if ($proportional eq 'yes') {
+    if ($use_combined_ratings) {
+	print 'This poll uses the proportional representation
+	    algorithm with the combined-ratings voter criterion.',br(), $cr;
+    } else {
+	print 'This poll uses the proportional representation
+	    algorithm with the best-candidate voter criterion.',br(), $cr;
+    }
+    if ($num_choices == 1) {
+	print p('Proportional representation is enabled
+	    but there is only a single winner. Therefore, proportional
+	    representation mode will have no effect.'), $cr;
+    }
+}
+
+if ($ballot_reporting eq 'yes') {
+    print $tx->Detailed_ballot_reporting_enabled, br(), $cr;
+    if ($reveal_voters eq 'yes') {
+	print $tx->Voter_identities_will_be_public;
+    } else {
+	print $tx->Voter_identities_will_be_kept_anonymous;
+    }
+} else {
+    print $tx->Detailed_ballot_reporting_disabled;
+}
+ 
+print $cr, h2($tx->Description), p($description);
+print $cr, h2($tx->Candidates);
+print p($tx->the_top_n_will_win($num_winners));
+print "<ul id='candidates'>$cr";
+
+print "<form method=\"POST\"
+	    action=\"$civs_bin_path/remove_writein@PERLEXT@\"
+	    enctype=\"multipart/form-data\"
+	    name=\"RemoveWritein\">", $cr;
+print hidden('id', $election_id);
+print hidden('key', $control_key);
+print hidden('akey', $authorization_key)
+	if defined($authorization_key);
+print hidden('writein', 'num');
+print hidden('writein_name', 'foo');
+for (my $j = 0; $j < $num_choices; $j++) {
+    if (IsWriteinName($choices[$j]) && $num_votes < 1) {
+	print li($choices[$j], $cr,
+	    button(-name => "remove",
+	           -onclick => "document.RemoveWritein.elements.writein.value = '$j'; document.RemoveWritein.submit()",
+		   -class => 'small_button')), $cr;
+    } else {
+	print li($choices[$j], $cr);
+    }
+}
+print "</ul></form>$cr";
+
+if ($external_ballots ne 'yes') {
+    print $cr, h2($tx->Add_voters);
+
+    print p($tx->add_voter_instructions);
+
+    print "<form method=\"POST\"
+		action=\"$civs_bin_path/add_voters@PERLEXT@\"
+		enctype=\"multipart/form-data\"
+		name=\"AddVoters\">", $cr;
+    print hidden('id', $election_id);
+    print hidden('key', $control_key);
+    print hidden('akey', $authorization_key)
+	    if defined($authorization_key);
+    print p('<textarea rows="2" name="new_addresses" cols="50"></textarea>');
+    print p($tx->Upload_file, '<input id=new_addresses_file type=file name="new_addresses_file">');
+    print '<input type="submit" value="'.$tx->Add_voters.'" name="add">';
+    print '</form>';
+} else {
+    print $cr, h2($tx->Load_ballot_data);
+
+    print "<form method=\"POST\"
+               action=\"$civs_bin_path/upload_ballots@PERLEXT@\"
+	       enctype=\"multipart/form-data\"
+	       name=\"LoadBallots\">$cr";
+    print hidden('id', $election_id);
+    print hidden('key', $control_key);
+    print hidden('akey', $authorization_key)
+	    if defined($authorization_key);
+
+    print 'File to upload ballots from:',
+	input({type=>'file', name=>'ballot_data'}), $cr;
+    print input({type=>'submit', value=>'Load ballots', name=>'load_ballots'});
+
+    print p({class=>'explanation'}, small('The file should be formatted with one ballot per line. Each
+      line contains the ranks of the N choices, which are numbers from 1
+      to N, or a dash (<kbd>-</kbd>) to represent no opinion. Ranks should be
+      separated by whitespace or a comma. Lines may be terminated
+      with LF or CR/LF. Whitespace is ignored; lines whose first
+      non-whitespace character is # are also ignored. A line may begin
+      with <i>m</i><kbd>X</kbd> where <i>m</i> is a number, which
+      signifies <i>m</i> identical ballots described by the rest of
+      the line.')), $cr,
+      p('Examples of ballots:'),
+      pre(
+'1,4,3,2,5        <i>A simple ballot ranking five choices.</i>
+5 - 2 - 3        <i>Another ranking of five choices. Dashes indicate unranked choices.</i>
+8X1 4 3 2 5      <i>Eight ballots like the first example ballot.</i>'
+      );
+}
+
+print end_html();
+
+exit 0;
+# vim: set sw=4 ts=8
