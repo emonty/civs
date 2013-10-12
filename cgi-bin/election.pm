@@ -476,11 +476,12 @@ sub ElectionLog {
 # the election's authorization key, and the server's private key.
 # Assumes that the authorization key has been validated.
 sub GenerateVoterKey {
-    (my $voter_email, my $authorization_key) = @_;
+    (my $voter_email, my $authorization_key, my $voter_id) = @_;
     my $voter_key = civs_hash($voter_email, $authorization_key,
         $private_host_id);
     if ($reveal_voters eq 'yes') {
-	$edata{"email_addr $voter_key"} = $voter_email;
+        $edata{"email_addr $voter_key"} = $voter_email;
+        $edata{"voter_id $voter_key"} = $voter_id;
     }
     return $voter_key;
 }
@@ -512,6 +513,13 @@ sub SendBody {
 }
 
 
+sub SplitVoterId {
+    my $voter_string = shift;
+    my @voter_parts = split(':', $voter_string);
+    return @voter_parts;
+}
+
+
 # Construct new voter keys for all of the voters sent in @_.
 # Send all of the voters their keys, with logging to STDOUT.
 # Record the keys in the database, and update the number of
@@ -521,7 +529,8 @@ sub SendKeys {
     my $addresses_ref = shift;
     my @addresses =  &unique_elements( @{$addresses_ref} );
     if (!($local_debug)) { ConnectMail; }
-    foreach my $v (@addresses) {
+    foreach my $address_entry (@addresses) {
+        my ($v, $voter_id) = SplitVoterId($address_entry);
         $v = TrimAddr($v);
         if ($v eq '') { next; }
         if (!CheckAddr($v)) {
@@ -535,7 +544,8 @@ sub SendKeys {
             $url .= "&akey=$authorization_key"
                 if (&ElectionUsesAuthorizationKey);
         } else {
-            my $voter_key = GenerateVoterKey($v, $authorization_key);
+            my $voter_key = GenerateVoterKey(
+                $v, $authorization_key, $voter_id);
             my $hash_voter_key = civs_hash($voter_key);
             if ($voter_keys{$hash_voter_key}) {
                 # This email address has already been added to the poll
